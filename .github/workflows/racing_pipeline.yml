@@ -8,6 +8,7 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 350 # 放寬至接近 6 小時上限，給予全量大數據充足下載時間
     permissions:
       contents: write
 
@@ -24,15 +25,16 @@ jobs:
         run: |
           pip install requests beautifulsoup4 pandas openpyxl lxml
 
-      - name: 執行資料庫分析與網頁生成
+      - name: 執行全數據資產全量採集
         run: |
           python .github/workflows/run_backtest.py
 
-      - name: 上傳儀表板網頁與報表
+      - name: 上傳全量數據庫與報表
         uses: actions/upload-artifact@v4
         with:
-          name: 賽馬5季練馬師訓練回測結果
+          name: 賽馬5季全量大數據庫與回測結果
           path: |
-            index.html
+            hk_racing.db
             trainer_backtest_report.xlsx
+            index.html
           retention-days: 30
