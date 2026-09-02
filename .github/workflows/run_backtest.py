@@ -138,7 +138,6 @@ def crawl_results_if_needed():
     conn.close()
 
 def crawl_trackwork_signals():
-    """抓取馬會官方晨操資料庫，特別辨識奧運沙地與從化登山跑道特操"""
     init_db()
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -153,14 +152,13 @@ def crawl_trackwork_signals():
     print("[*] 正在抓取馬會官方每日晨操紀錄（包含沙田奧運馬房沙地、從化登山跑道）...")
     session = requests.Session()
     
-    # 選取具代表性的備戰日期區間（過去數月各賽日賽前 7 天），確保能快速對碰
     sample_dates = []
     base_date = datetime.date(2026, 5, 1)
     end_date = datetime.date(2026, 8, 30)
     curr = base_date
     while curr <= end_date:
         sample_dates.append(curr.strftime("%d/%m/%Y"))
-        curr += datetime.timedelta(days=2) # 每隔兩天取樣，覆蓋大部分賽前踱步與快跳
+        curr += datetime.timedelta(days=2)
 
     saved_works = 0
     for d_str in sample_dates:
@@ -177,14 +175,18 @@ def crawl_trackwork_signals():
                     cols = [td.text.strip() for td in r.find_all("td")]
                     if len(cols) >= 5:
                         h_name_raw = at(cols, 0)
-                        h_name = h_name_raw.split("(")[0].strip()
-                        h_code = h_name_raw.split("(").replace(")", "").strip() if "(" in h_name_raw else ""
+                        if "(" in h_name_raw:
+                            p = h_name_raw.split("(")
+                            h_name = at(p, 0).strip()
+                            h_code = at(p, 1).replace(")", "").strip()
+                        else:
+                            h_name = h_name_raw.strip()
+                            h_code = ""
                         trainer = at(cols, 1)
                         work_type = at(cols, 2)
                         track_loc = at(cols, 3)
                         details = at(cols, 4)
                         
-                        # 日期轉為 YYYY/MM/DD
                         d_parts = d_str.split("/")
                         standard_date = f"{at(d_parts, 2)}/{at(d_parts, 1)}/{at(d_parts, 0)}"
                         
@@ -250,7 +252,6 @@ def generate_interactive_dashboard():
         (trainer_rest_stats['roi'] > 100)
     ].sort_values(by='roi', ascending=False)
 
-    # 進行晨操對碰計算：奧運沙地
     olympic_query = """
     WITH matched AS (
         SELECT DISTINCT
@@ -277,7 +278,6 @@ def generate_interactive_dashboard():
         df_olympic['place_rate'] = (df_olympic['places'] / df_olympic['total_runs'] * 100).round(1)
         df_olympic['roi'] = (df_olympic['total_payout'] / df_olympic['total_bet'] * 100).round(1)
 
-    # 進行晨操對碰計算：從化特訓
     conghua_query = """
     WITH matched AS (
         SELECT DISTINCT
@@ -304,7 +304,6 @@ def generate_interactive_dashboard():
         df_conghua['place_rate'] = (df_conghua['places'] / df_conghua['total_runs'] * 100).round(1)
         df_conghua['roi'] = (df_conghua['total_payout'] / df_conghua['total_bet'] * 100).round(1)
 
-    # 查出觸發暗號的具體賽駒清單
     horse_trigger_query = """
     SELECT DISTINCT
         r.horse_name,
@@ -326,7 +325,6 @@ def generate_interactive_dashboard():
     df_triggered_horses = pd.read_sql_query(horse_trigger_query, conn)
     conn.close()
 
-    # 匯出 Excel
     with pd.ExcelWriter(REPORT_NAME, engine='openpyxl') as writer:
         high_roi_patterns.to_excel(writer, sheet_name='高勝算模式(ROI超100%)', index=False)
         trainer_rest_stats.to_excel(writer, sheet_name='出賽間隔完整明細', index=False)
@@ -335,7 +333,6 @@ def generate_interactive_dashboard():
         if not df_conghua.empty:
             df_conghua.to_excel(writer, sheet_name='從化登山戰績榜', index=False)
 
-    # 渲染 HTML 內容
     high_roi_rows = ""
     for _, r in high_roi_patterns.iterrows():
         high_roi_rows += f"""
@@ -351,7 +348,6 @@ def generate_interactive_dashboard():
         </tr>
         """
 
-    # 渲染奧運沙地表格
     olympic_rows = ""
     if not df_olympic.empty:
         for _, r in df_olympic.iterrows():
@@ -371,7 +367,6 @@ def generate_interactive_dashboard():
     else:
         olympic_rows = "<tr><td colspan='7' style='text-align:center; color: var(--text-muted);'>正在載入中，請重新整理</td></tr>"
 
-    # 渲染從化表格
     conghua_rows = ""
     if not df_conghua.empty:
         for _, r in df_conghua.iterrows():
@@ -391,7 +386,6 @@ def generate_interactive_dashboard():
     else:
         conghua_rows = "<tr><td colspan='7' style='text-align:center; color: var(--text-muted);'>正在載入中，請重新整理</td></tr>"
 
-    # 渲染觸發暗號馬匹清單
     horse_rows = ""
     if not df_triggered_horses.empty:
         for _, r in df_triggered_horses.iterrows():
@@ -427,139 +421,4 @@ def generate_interactive_dashboard():
             --primary-dark: #16213e;
             --accent: #e94560;
             --bg: #f8f9fa;
-            --card-bg: #ffffff;
-            --text: #2d3436;
-            --text-muted: #636e72;
-            --border: #dfe6e9;
-        }}
-        * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }}
-        body {{ background-color: var(--bg); color: var(--text); padding-bottom: 50px; }}
-        .navbar {{ background: linear-gradient(135deg, var(--primary-dark), var(--primary)); color: white; padding: 20px 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
-        .navbar-brand {{ font-size: 22px; font-weight: 800; }}
-        .navbar-sub {{ font-size: 13px; opacity: 0.85; margin-top: 4px; }}
-        .container {{ max-width: 1200px; margin: 24px auto; padding: 0 16px; }}
-        .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }}
-        .kpi-card {{ background: var(--card-bg); padding: 20px; border-radius: 12px; border: 1px solid var(--border); }}
-        .kpi-title {{ font-size: 13px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }}
-        .kpi-value {{ font-size: 26px; font-weight: 800; color: var(--primary); margin-top: 6px; }}
-        .card {{ background: var(--card-bg); border-radius: 12px; border: 1px solid var(--border); padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.03); }}
-        .card-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 2px solid #f1f2f6; padding-bottom: 12px; }}
-        .card-title {{ font-size: 18px; font-weight: 700; color: var(--primary-dark); }}
-        .badge {{ padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }}
-        .badge-success {{ background: #e6fffa; color: #00b894; border: 1px solid #b2f5ea; }}
-        .badge-gold {{ background: #fef9e7; color: #b7791f; border: 1px solid #fef3c7; }}
-        .badge-pill {{ background: #edf2f7; color: #4a5568; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
-        th, td {{ padding: 12px 14px; text-align: left; font-size: 14px; border-bottom: 1px solid var(--border); }}
-        th {{ background-color: #f8fafc; color: var(--text-muted); font-weight: 600; }}
-        .roi-positive {{ color: #d63031; font-weight: 700; }}
-        select.filter-select {{ padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; background: white; width: 100%; max-width: 340px; }}
-        .sub-header {{ font-size: 15px; font-weight: 700; color: var(--primary); margin: 18px 0 8px 0; }}
-        .footer {{ text-align: center; color: var(--text-muted); font-size: 13px; margin-top: 30px; }}
-    </style>
-</head>
-<body>
-    <div class="navbar">
-        <div class="container" style="margin: 0 auto; padding: 0;">
-            <div class="navbar-brand">🏇 香港賽馬・練馬師出擊特徵與訓練模型儀表板</div>
-            <div class="navbar-sub">基於 2021–2026 連續 5 個馬季賽果與官方晨操微觀特徵對碰</div>
-        </div>
-    </div>
-
-    <div class="container">
-        <div class="kpi-grid">
-            <div class="kpi-card">
-                <div class="kpi-title">總分析出賽次數</div>
-                <div class="kpi-value">{total_runs_formatted} <span style="font-size: 14px; font-weight: normal; color: var(--text-muted);">次</span></div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">覆蓋歷史長度</div>
-                <div class="kpi-value">5 <span style="font-size: 14px; font-weight: normal; color: var(--text-muted);">個馬季 (2021-2026)</span></div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">追蹤練馬師總數</div>
-                <div class="kpi-value">{trainers_count} <span style="font-size: 14px; font-weight: normal; color: var(--text-muted);">位</span></div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">正期望值出擊模式</div>
-                <div class="kpi-value" style="color: #d63031;">{high_roi_count} <span style="font-size: 14px; font-weight: normal; color: var(--text-muted);">個 (ROI > 100%)</span></div>
-            </div>
-        </div>
-
-        <!-- 🎯 微觀訓練暗號雷達專區（真實數據） -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">🎯 微觀訓練暗號雷達（特殊操練真實戰績榜）</div>
-                <span class="badge badge-success">官方晨操交叉回測</span>
-            </div>
-            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
-                透過對碰馬匹賽前 14 天內的官方晨操地點與賽果，客觀驗證特定操練手法的真實威力：
-            </p>
-
-            <div class="sub-header">🏖️ 沙田奧運馬房沙地練習場・馬房出擊榜</div>
-            <div style="overflow-x: auto; margin-bottom: 20px;">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>練馬師</th>
-                            <th>賽前赴奧運沙地出賽數</th>
-                            <th>頭馬數</th>
-                            <th>上名數 (前3)</th>
-                            <th>勝率 (%)</th>
-                            <th>上名率 (%)</th>
-                            <th>獨贏 ROI (%)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {olympic_rows}
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="sub-header">⛰️ 從化登山跑道特操・出擊榜</div>
-            <div style="overflow-x: auto; margin-bottom: 20px;">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>練馬師</th>
-                            <th>從化特操出賽數</th>
-                            <th>頭馬數</th>
-                            <th>上名數 (前3)</th>
-                            <th>勝率 (%)</th>
-                            <th>上名率 (%)</th>
-                            <th>獨贏 ROI (%)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {conghua_rows}
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="sub-header">🐎 觸發特殊訓練暗號之賽駒實戰清單</div>
-            <div style="overflow-x: auto;">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>馬名</th>
-                            <th>練馬師</th>
-                            <th>觸發訓練暗號</th>
-                            <th>出賽日期</th>
-                            <th>競賽成績</th>
-                            <th>獨贏賠率</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {horse_rows}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- 🌟 高勝算黃金出擊模式 -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">🌟 5 季練馬師出賽週期高勝算模式（獨贏 ROI 突破 100%）</div>
-                <span class="badge badge-success">出賽至少30次過濾</span>
-            </div>
-            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">以下為打破馬會 17.
+            --card-
