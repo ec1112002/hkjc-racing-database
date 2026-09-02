@@ -3,7 +3,7 @@ name: HKJC 5-Season Crawl & Trainer Backtest
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 16 * * 3,7'
+    - cron: '0 16 * * 0,3' # 0=星期日, 3=星期三 (UTC 16:00 即香港時間午夜 12 點)
 
 jobs:
   run-pipeline:
