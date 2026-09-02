@@ -3,7 +3,7 @@ name: HKJC 5-Season Crawl & Trainer Backtest
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 16 * * 0,3' # 0=星期日, 3=星期三 (UTC 16:00 即香港時間午夜 12 點)
+    - cron: '0 16 * * 0,3'
 
 jobs:
   run-pipeline:
@@ -24,15 +24,15 @@ jobs:
         run: |
           pip install requests beautifulsoup4 pandas openpyxl lxml
 
-      - name: 執行 5 季歷史抓取與練馬師回測
+      - name: 執行資料庫分析與網頁生成
         run: |
           python .github/workflows/run_backtest.py
 
-      - name: 上傳回測報表與資料庫
+      - name: 上傳儀表板網頁與報表
         uses: actions/upload-artifact@v4
         with:
           name: 賽馬5季練馬師訓練回測結果
           path: |
+            index.html
             trainer_backtest_report.xlsx
-            hk_racing.db
           retention-days: 30
