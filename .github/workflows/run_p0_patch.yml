@@ -1,7 +1,11 @@
 name: Patch P0 - Ratings and Stewards Incidents
 
 on:
-  workflow_dispatch: # 支援在網頁上手動點擊啟動
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   patch-database:
@@ -9,6 +13,27 @@ jobs:
     steps:
       - name: 檢出倉庫代碼
         uses: actions/checkout@v4
+
+      - name: 準備資料庫 (若為空檔案則自動從任務 #13 下載)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SIZE=0
+          if [ -f hk_racing.db ]; then
+            SIZE=$(stat -c%s "hk_racing.db" 2>/dev/null || wc -c < "hk_racing.db" || echo 0)
+          fi
+          echo "當前倉庫中的 hk_racing.db 大小: $SIZE 位元組"
+
+          if [ "$SIZE" -lt 100000 ]; then
+            echo "偵測到資料庫為空殼檔案，正在自動從先前的任務成果下載 3.7MB 真實資料庫..."
+            gh run download --name "賽馬5季全量大數據庫與回測結果" || gh run download || true
+            FOUND_DB=$(find . -name "hk_racing.db" -size +1M | head -n 1)
+            if [ -n "$FOUND_DB" ]; then
+              cp "$FOUND_DB" ./hk_racing.db
+              echo "成功載入真實資料庫: $FOUND_DB"
+            fi
+          fi
+          ls -lh hk_racing.db
 
       - name: 設定 Python 環境
         uses: actions/setup-python@v5
