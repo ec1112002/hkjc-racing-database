@@ -1,0 +1,32 @@
+name: Patch P1 - Gear Changes and Weights
+
+on:
+  workflow_dispatch:
+
+jobs:
+  patch-gear-and-weights:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 檢出倉庫代碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝所需套件
+        run: |
+          pip install requests beautifulsoup4
+
+      - name: 執行第二階段採集腳本
+        run: |
+          python patch_p1_gear_weights.py
+
+      - name: 打包最新資料庫為成果檔案 (Artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: updated-hk-racing-db-p1
+          path: hk_racing.db
+          retention-days: 14
