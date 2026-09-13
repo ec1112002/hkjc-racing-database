@@ -36,21 +36,40 @@ def init_tables(conn):
         race_id TEXT,
         race_date TEXT,
         race_no INTEGER,
-        horse_no INTEGER,
         horse_code TEXT,
         horse_name TEXT,
         jockey TEXT,
         actual_weight REAL,
         declared_weight REAL,
+        weight_change REAL,
         jockey_allowance INTEGER DEFAULT 0
     )""")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_gear_horse ON gear_changes_history(horse_code)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_weights_race ON horse_weights_allowance(race_id)")
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS horse_ratings_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        horse_code TEXT,
+        horse_name TEXT,
+        race_id TEXT,
+        race_date TEXT,
+        pre_race_rating INTEGER,
+        rating_change INTEGER,
+        post_race_rating INTEGER
+    )""")
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS track_environment_detail (
+        race_id TEXT PRIMARY KEY,
+        race_date TEXT,
+        track_info TEXT,
+        going TEXT,
+        penetrometer_reading REAL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_gear_h ON gear_changes_history(horse_code)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_weights_r ON horse_weights_allowance(race_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ratings_h ON horse_ratings_history(horse_code)")
     conn.commit()
 
 def parse_gear_changes(gear_str):
-    """解析配備變更代碼：如 B1/TT, CP-/H2 等"""
-    if not gear_str or gear_str == '-' or gear_str == '--':
+    if not gear_str or gear_str in ('-', '--', 'N/A', 'None'):
         return "", "", "", ""
     items = [x.strip() for x in gear_str.replace('/', ' ').split() if x.strip()]
     first_time, removed, reapplied, current = [], [], [], []
@@ -67,151 +86,119 @@ def parse_gear_changes(gear_str):
             current.append(item)
     return "/".join(current), "/".join(first_time), "/".join(removed), "/".join(reapplied)
 
-def get_completed_dates(conn):
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT race_date FROM horse_weights_allowance")
-    return set(row[0] for row in c.fetchall())
-
 def main():
+    if not os.path.exists(DB_PATH):
+        print(f"找不到資料庫: {DB_PATH}")
+        return
+
     conn = sqlite3.connect(DB_PATH)
     init_tables(conn)
-    completed_dates = get_completed_dates(conn)
-    
-    current_date = datetime.date(2021, 9, 1)
-    end_date = datetime.date.today()
-    target_weekdays = (2, 5, 6)
-    
-    candidate_dates = []
-    while current_date <= end_date:
-        if current_date.weekday() in target_weekdays:
-            if not (current_date.month == 7 and current_date.day > 16) and current_date.month != 8:
-                candidate_dates.append(current_date.strftime("%Y-%m-%d"))
-        current_date += datetime.timedelta(days=1)
+    c = conn.cursor()
+
+    # ==========================================
+    # 第一部分：秒級提煉 配備、體重與評分 (約 3 秒)
+    # ==========================================
+    print("[1/2] 正在從現有賽果中提煉 5 年配備代碼、體重讓磅與評分...")
+    c.execute("""
+    SELECT race_id, race_date, race_no, horse_code, horse_name, jockey, actual_weight, declared_weight, gear, rating
+    FROM race_results
+    ORDER BY horse_code ASC, race_date ASC, race_no ASC
+    """)
+    rows = c.fetchall()
+
+    weights_data = []
+    gear_data = []
+    ratings_data = []
+
+    prev_horse = None
+    prev_weight = None
+    prev_rating = None
+
+    for r in rows:
+        race_id, r_date, r_no, h_code, h_name, jockey_str, act_wt, dec_wt, gear_str, rating = r
         
-    pending_dates = [d for d in candidate_dates if d not in completed_dates]
-    print(f"總待處理賽日: {len(pending_dates)} 天 (已完成: {len(completed_dates)} 天)")
+        if h_code != prev_horse:
+            wt_change = 0.0
+            rating_change = 0
+        else:
+            wt_change = round(dec_wt - prev_weight, 1) if (dec_wt and prev_weight) else 0.0
+            rating_change = (rating - prev_rating) if (rating is not None and prev_rating is not None) else 0
+            
+        prev_horse = h_code
+        prev_weight = dec_wt
+        prev_rating = rating
+
+        allow_m = re.search(r'\(-?(\d+)\)', str(jockey_str or ''))
+        allowance = int(allow_m.group(1)) if allow_m else 0
+        clean_jockey = re.sub(r'\(.*?\)', '', str(jockey_str or '')).strip()
+
+        weights_data.append((race_id, r_date, r_no, h_code, h_name, clean_jockey, act_wt, dec_wt, wt_change, allowance))
+        cur_g, f_g, rem_g, re_g = parse_gear_changes(str(gear_str or ''))
+        gear_data.append((h_code, h_name, race_id, r_date, cur_g, str(gear_str or ''), f_g, rem_g, re_g))
+
+        if rating is not None:
+            ratings_data.append((h_code, h_name, race_id, r_date, rating, rating_change, rating))
+
+    c.execute("DELETE FROM horse_weights_allowance")
+    c.execute("DELETE FROM gear_changes_history")
+    c.execute("DELETE FROM horse_ratings_history")
+
+    c.executemany("INSERT INTO horse_weights_allowance VALUES (NULL,?,?,?,?,?,?,?,?,?,?)", weights_data)
+    c.executemany("INSERT INTO gear_changes_history VALUES (NULL,?,?,?,?,?,?,?,?,?)", gear_data)
+    c.executemany("INSERT INTO horse_ratings_history VALUES (NULL,?,?,?,?,?,?,?)", ratings_data)
+    conn.commit()
+    print(f"  [✔] 成功寫入體重表 {len(weights_data)} 筆、配備表 {len(gear_data)} 筆、評分表 {len(ratings_data)} 筆！")
+
+    # ==========================================
+    # 第二部分：抓取 5 年賽日移欄跑道與場地硬度 (約 12 分鐘)
+    # ==========================================
+    print("[2/2] 正在抓取 5 年賽馬日之移欄跑道 (A/B/C) 與壓地儀硬度讀數...")
+    c.execute("SELECT DISTINCT race_date FROM race_results ORDER BY race_date ASC")
+    distinct_dates = [row[0] for row in c.fetchall()]
     
     session = requests.Session()
     session.headers.update(HEADERS)
     
-    total_meetings = 0
-    total_records = 0
-    
-    for idx, race_date in enumerate(pending_dates, 1):
-        date_str = race_date.replace("-", "/")
-        date_id = race_date.replace("-", "")
+    track_count = 0
+    for idx, r_date in enumerate(distinct_dates, 1):
+        date_str = r_date.replace("-", "/")
+        date_id = r_date.replace("-", "")
+        race_id = f"{date_id}01"
         
-        # 1. 探測第 1 場是否為有效賽馬日
-        test_url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_str}&RaceNo=1"
+        url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_str}&RaceNo=1"
         try:
-            resp = session.get(test_url, timeout=10)
-            if resp.status_code != 200 or "沒有相關賽事" in resp.text:
-                continue
+            resp = session.get(url, timeout=10)
+            if resp.status_code == 200 and "沒有相關賽事" not in resp.text:
+                soup = BeautifulSoup(resp.content, "html.parser")
+                page_text = soup.get_text()
+                
+                m_going = re.search(r'場地狀況\s*[:：]\s*([^\s<]+)', page_text)
+                going = m_going.group(1) if m_going else ""
+                
+                m_track = re.search(r'賽道\s*[:：]\s*([^\n<]+)', page_text)
+                track_info = m_track.group(1).strip() if m_track else ""
+                
+                m_pene = re.search(r'壓地儀讀數\s*[:：]\s*(\d+\.?\d*)', page_text)
+                pene = float(m_pene.group(1)) if m_pene else None
+                
+                c.execute("""
+                INSERT OR REPLACE INTO track_environment_detail (race_id, race_date, track_info, going, penetrometer_reading)
+                VALUES (?, ?, ?, ?, ?)
+                """, (race_id, r_date, track_info, going, pene))
+                track_count += 1
+                
+        except Exception:
+            pass
             
-            soup = BeautifulSoup(resp.content, "html.parser")
-            max_race = 11
-            race_nav = soup.find_all("a", href=lambda h: h and "RaceNo=" in h)
-            if race_nav:
-                nums = [int(a.text.strip()) for a in race_nav if a.text.strip().isdigit()]
-                if nums:
-                    max_race = max(nums)
-                    
-            total_meetings += 1
-            print(f"[{idx}/{len(pending_dates)}] 處理賽日: {race_date} (共 {max_race} 場)")
-            
-            for race_no in range(1, max_race + 1):
-                race_id = f"{date_id}{race_no:02d}"
-                
-                # 抓取賽果頁（取得實際負磅、排位體重、騎師讓磅）
-                res_url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_str}&RaceNo={race_no}"
-                # 抓取排位表（取得最完整官方配備異動代碼）
-                card_url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_str}&RaceNo={race_no}"
-                
-                # A. 提取排位表的配備資訊
-                gear_map = {}
-                try:
-                    c_resp = session.get(card_url, timeout=10)
-                    c_soup = BeautifulSoup(c_resp.content, "html.parser")
-                    card_table = c_soup.find("table", class_="table_bd") or c_soup.find("table", class_="f_tac")
-                    if card_table:
-                        for row in card_table.find_all("tr")[1:]:
-                            tds = row.find_all("td")
-                            if len(tds) >= 10:
-                                h_name_code = tds.get_text(strip=True) if len(tds) > 2 else ""
-                                m = re.search(r'\(([A-Z0-9]+)\)', h_name_code)
-                                if m:
-                                    h_code = m.group(1)
-                                    raw_gear = tds[-1].get_text(strip=True)
-                                    gear_map[h_code] = raw_gear
-                except Exception:
-                    pass
-                
-                # B. 提取賽果頁的體重與負磅資訊
-                try:
-                    r_resp = session.get(res_url, timeout=10)
-                    r_soup = BeautifulSoup(r_resp.content, "html.parser")
-                    res_table = r_soup.find("table", class_="table_bd") or r_soup.find("table", class_="f_tac")
-                    
-                    if res_table:
-                        c = conn.cursor()
-                        for row in res_table.find_all("tr")[1:]:
-                            tds = row.find_all("td")
-                            if len(tds) >= 8:
-                                try:
-                                    h_no_str = tds.get_text(strip=True)
-                                    h_no = int(h_no_str) if h_no_str.isdigit() else 0
-                                    
-                                    h_name_code = tds.get_text(strip=True)
-                                    m = re.search(r'\(([A-Z0-9]+)\)', h_name_code)
-                                    h_code = m.group(1) if m else ""
-                                    h_name = re.sub(r'\(.*?\)', '', h_name_code).strip()
-                                    
-                                    jockey_raw = tds.get_text(strip=True)
-                                    allow_m = re.search(r'\(-?(\d+)\)', jockey_raw)
-                                    allowance = int(allow_m.group(1)) if allow_m else 0
-                                    jockey = re.sub(r'\(.*?\)', '', jockey_raw).strip()
-                                    
-                                    act_wt_str = tds.get_text(strip=True)
-                                    act_wt = float(act_wt_str) if act_wt_str.replace('.', '', 1).isdigit() else 0.0
-                                    
-                                    dec_wt_str = tds.get_text(strip=True)
-                                    dec_wt = float(dec_wt_str) if dec_wt_str.replace('.', '', 1).isdigit() else 0.0
-                                    
-                                    # 寫入體重與讓磅表
-                                    c.execute("""
-                                    INSERT INTO horse_weights_allowance (
-                                        race_id, race_date, race_no, horse_no, horse_code, horse_name,
-                                        jockey, actual_weight, declared_weight, jockey_allowance
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (race_id, race_date, race_no, h_no, h_code, h_name, jockey, act_wt, dec_wt, allowance))
-                                    
-                                    # 寫入配備變更表
-                                    raw_gear = gear_map.get(h_code, "")
-                                    cur_g, f_g, rem_g, re_g = parse_gear_changes(raw_gear)
-                                    if raw_gear or cur_g:
-                                        c.execute("""
-                                        INSERT INTO gear_changes_history (
-                                            horse_code, horse_name, race_id, race_date, current_gear,
-                                            gear_changes, first_time_gear, removed_gear, reapplied_gear
-                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                        """, (h_code, h_name, race_id, race_date, cur_g, raw_gear, f_g, rem_g, re_g))
-                                        
-                                    total_records += 1
-                                except Exception:
-                                    continue
-                        conn.commit()
-                except Exception as ex:
-                    print(f"  場次 {race_id} 處理異常: {ex}")
-                    
-                time.sleep(random.uniform(0.6, 1.0))
-                
-        except Exception as e:
-            print(f"賽日 {race_date} 探測失敗: {e}")
-            
-        time.sleep(random.uniform(0.8, 1.2))
-        
+        time.sleep(random.uniform(1.0, 1.5))
+        if idx % 50 == 0:
+            conn.commit()
+            print(f"  --> 進度: {idx}/{len(distinct_dates)} 賽日處理完成...")
+
+    conn.commit()
     conn.close()
-    print(f"第二階段補齊圓滿完成！累計更新 {total_meetings} 個賽事日，新增 {total_records} 筆配備與體重紀錄。")
+    print(f"\n[🎉 恭喜！全量終極數據庫補齊大圓滿！]")
+    print(f"已記錄 {track_count} 個賽日之跑道環境，所有維度全部到位！")
 
 if __name__ == "__main__":
     main()
