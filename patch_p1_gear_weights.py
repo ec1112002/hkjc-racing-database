@@ -51,15 +51,18 @@ def main():
     init_tables(conn)
     c = conn.cursor()
 
-    # ==========================================
-    # 第一部分：從現有賽果秒級提煉 體重增減 與 騎師讓磅
-    # ==========================================
-    print("[1/2] 正在提煉 5 年賽日體重增減與見習生讓磅利益...")
-    c.execute("""
-    SELECT race_id, race_date, race_no, horse_code, horse_name, jockey, actual_weight, declared_weight
-    FROM race_results
-    ORDER BY horse_code ASC, race_date ASC, race_no ASC
-    """)
+    # 1. 智慧探測 race_results 實際存在的欄位，避免報錯
+    c.execute("PRAGMA table_info(race_results)")
+    cols = {row for row in c.fetchall()}
+    has_dec_wt = 'declared_weight' in cols
+
+    print("[1/2] 正在提煉 5 年賽日負磅與見習騎師讓磅利益...")
+    query = "SELECT race_id, race_date, race_no, horse_code, horse_name, jockey, actual_weight"
+    if has_dec_wt:
+        query += ", declared_weight"
+    query += " FROM race_results ORDER BY horse_code ASC, race_date ASC, race_no ASC"
+
+    c.execute(query)
     rows = c.fetchall()
     print(f"[*] 成功讀取 {len(rows)} 筆賽果，開始計算...")
 
@@ -68,9 +71,12 @@ def main():
     prev_weight = None
 
     for r in rows:
-        race_id, r_date, r_no, h_code, h_name, jockey_str, act_wt, dec_wt = r
+        if has_dec_wt:
+            race_id, r_date, r_no, h_code, h_name, jockey_str, act_wt, dec_wt = r
+        else:
+            race_id, r_date, r_no, h_code, h_name, jockey_str, act_wt = r
+            dec_wt = 0.0
         
-        # 計算體重較上仗之增減 (Weight Change)
         if h_code != prev_horse:
             wt_change = 0.0
         else:
@@ -91,10 +97,8 @@ def main():
     conn.commit()
     print(f"  [✔] 成功寫入體重與讓磅表: {len(weights_data)} 筆！")
 
-    # ==========================================
-    # 第二部分：抓取 5 年賽日移欄跑道 (A/B/C) 與場地硬度 (約 10-12 分鐘)
-    # ==========================================
-    print("[2/2] 正在檢索 5 年賽馬日之移欄跑道與壓地儀讀數...")
+    # 2. 檢索 5 年賽日移欄跑道與壓地儀硬度讀數
+    print("[2/2] 正在檢索 5 年賽馬日之移欄跑道與壓地儀讀數 (約 10-12 分鐘)...")
     c.execute("SELECT DISTINCT race_date FROM race_results ORDER BY race_date ASC")
     distinct_dates = [row[0] for row in c.fetchall()]
     
@@ -103,8 +107,8 @@ def main():
     
     track_count = 0
     for idx, r_date in enumerate(distinct_dates, 1):
-        date_str = r_date.replace("-", "/")
-        date_id = r_date.replace("-", "")
+        date_str = str(r_date).replace("-", "/")
+        date_id = str(r_date).replace("-", "")
         race_id = f"{date_id}01"
         
         url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_str}&RaceNo=1"
@@ -117,7 +121,7 @@ def main():
                 m_going = re.search(r'場地狀況\s*[:：]\s*([^\s<]+)', page_text)
                 going = m_going.group(1) if m_going else ""
                 
-                m_track = re.search(r'賽道\s*[:：]\s*([^\n<]+)', page_text)
+                m_track = re.search(r'賽道\s*[:：]\s*([^<>\r\n]+)', page_text)
                 track_info = m_track.group(1).strip() if m_track else ""
                 
                 m_pene = re.search(r'壓地儀讀數\s*[:：]\s*(\d+\.?\d*)', page_text)
@@ -126,9 +130,8 @@ def main():
                 c.execute("""
                 INSERT OR REPLACE INTO track_environment_detail (race_id, race_date, track_info, going, penetrometer_reading)
                 VALUES (?, ?, ?, ?, ?)
-                """, (race_id, r_date, track_info, going, pene))
+                """, (race_id, str(r_date), track_info, going, pene))
                 track_count += 1
-                
         except Exception:
             pass
             
@@ -139,8 +142,8 @@ def main():
 
     conn.commit()
     conn.close()
-    print(f"\n[🎉 任務完成！]")
-    print(f"成功記錄 {track_count} 個賽馬日之跑道環境，資料庫已全面擴展完畢！")
+    print("\n[🎉 任務圓滿完成！]")
+    print(f"成功記錄 {track_count} 個賽馬日之跑道環境！")
 
 if __name__ == "__main__":
     main()
