@@ -1,0 +1,32 @@
+name: Patch P2 - Horse Lifecycle and Stable Transfers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  patch-horse-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 檢出倉庫代碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝所需套件
+        run: |
+          pip install requests beautifulsoup4
+
+      - name: 執行馬匹生命週期與轉倉採集
+        run: |
+          python patch_p2_horse_lifecycle.py
+
+      - name: 打包最新極致全量資料庫 (Artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-hk-racing-db-p2
+          path: hk_racing.db
+          retention-days: 14
