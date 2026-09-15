@@ -63,6 +63,11 @@ def init_tables(conn):
     c.execute("CREATE INDEX IF NOT EXISTS idx_rci_r ON raceday_changes_incidents(race_id)")
     conn.commit()
 
+def table_exists(conn, table_name):
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+    return cur.fetchone() is not None
+
 def main():
     if not os.path.exists(DB_PATH):
         print(f"找不到資料庫: {DB_PATH}")
@@ -95,11 +100,11 @@ def main():
                 table = soup.find("table", class_="table_bd")
                 if table:
                     for tr in table.find_all("tr")[1:]:
-                        tds = tr.find_all("td")
-                        if len(tds) >= 3:
-                            code = tds[0].get_text(strip=True)
-                            h_name = tds.get_text(strip=True)
-                            former = tds.get_text(strip=True)
+                        cols = [td.get_text(strip=True) for td in tr.find_all("td")]
+                        if len(cols) >= 3:
+                            code = cols[0]
+                            h_name = cols
+                            former = cols
                             m_country = re.search(r'\(([A-Z]{2,3})\)', former)
                             country = m_country.group(1) if m_country else ""
                             if code:
@@ -114,19 +119,23 @@ def main():
     print(f"  [✔] 成功建立自購馬海外對照庫: {len(pp_rows)} 匹！")
 
     # ==========================================
-    # 維度 2：從 5 年競賽事件報告中全量提煉 騎師停賽日程與處罰表
+    # 維度 2：從 5 年競賽事件報告全量提煉 騎師停賽日程與處罰表
     # ==========================================
     print("[2/4] 正在從 5 年受薪董事報告中全量抽取「騎師停賽處罰表」...")
-    c.execute("SELECT race_id, race_date, incident_report FROM stewards_incidents WHERE incident_report LIKE '%停賽%'")
     suspension_data = []
-    for r_id, r_date, report in c.fetchall():
-        m_name = re.search(r'騎師([^\s，,被由至]+)', report)
-        m_days = re.search(r'停賽(\d+|[一二兩三四五六七八九十]+)個', report)
-        m_fine = re.search(r'罰款([^\s，,。]+港?元)', report)
-        j_name = m_name.group(1) if m_name else "未知騎師"
-        s_days = m_days.group(1) if m_days else ""
-        f_amt = m_fine.group(1) if m_fine else ""
-        suspension_data.append((r_id, r_date, j_name, s_days, f_amt, report))
+    if table_exists(conn, "stewards_incidents"):
+        try:
+            c.execute("SELECT race_id, race_date, incident_report FROM stewards_incidents WHERE incident_report LIKE '%停賽%'")
+            for r_id, r_date, report in c.fetchall():
+                m_name = re.search(r'騎師([^\s，,被由至]+)', report)
+                m_days = re.search(r'停賽(\d+|[一二兩三四五六七八九十]+)個', report)
+                m_fine = re.search(r'罰款([^\s，,。]+港?元)', report)
+                j_name = m_name.group(1) if m_name else "未知騎師"
+                s_days = m_days.group(1) if m_days else ""
+                f_amt = m_fine.group(1) if m_fine else ""
+                suspension_data.append((r_id, r_date, j_name, s_days, f_amt, report))
+        except Exception as e:
+            print(f"  [!] 停賽提取跳過: {e}")
 
     c.execute("DELETE FROM jockey_suspensions")
     c.executemany("INSERT INTO jockey_suspensions VALUES (NULL, ?, ?, ?, ?, ?, ?)", suspension_data)
@@ -137,16 +146,20 @@ def main():
     # 維度 3：從獸醫與賽事報告全量抽取 專項列管健康名單 (喘鳴症/喉部手術/流鼻血)
     # ==========================================
     print("[3/4] 正在建立專項列管健康名單 (喉部手術、喘鳴症、流鼻血)...")
-    c.execute("SELECT horse_code, horse_name, incident_date, condition_desc FROM veterinary_records")
     health_data = []
-    for h_code, h_name, v_date, desc in c.fetchall():
-        h_type = "常規傷患"
-        if "喉部" in desc or "喘鳴" in desc: h_type = "喉部手術/喘鳴症"
-        elif "血" in desc: h_type = "流鼻血/氣管多血"
-        elif "心律" in desc: h_type = "心律不正常"
-        elif "不良於行" in desc or "跛足" in desc: h_type = "不良於行/跛足"
-        elif "懸韌帶" in desc or "筋腱" in desc: h_type = "筋腱/韌帶損傷"
-        health_data.append((h_code, h_name, v_date, h_type, desc))
+    if table_exists(conn, "veterinary_records"):
+        try:
+            c.execute("SELECT horse_code, horse_name, incident_date, condition_desc FROM veterinary_records")
+            for h_code, h_name, v_date, desc in c.fetchall():
+                h_type = "常規傷患"
+                if "喉部" in desc or "喘鳴" in desc: h_type = "喉部手術/喘鳴症"
+                elif "血" in desc: h_type = "流鼻血/氣管多血"
+                elif "心律" in desc: h_type = "心律不正常"
+                elif "不良於行" in desc or "跛足" in desc: h_type = "不良於行/跛足"
+                elif "懸韌帶" in desc or "筋腱" in desc: h_type = "筋腱/韌帶損傷"
+                health_data.append((h_code, h_name, v_date, h_type, desc))
+        except Exception as e:
+            print(f"  [!] 獸醫提取跳過: {e}")
 
     c.execute("DELETE FROM special_health_registers")
     c.executemany("INSERT INTO special_health_registers VALUES (NULL, ?, ?, ?, ?, ?)", health_data)
@@ -157,11 +170,15 @@ def main():
     # 維度 4：從賽事報告抽取 臨場突發事項 (換騎師/超磅/閘前重新裝蹄)
     # ==========================================
     print("[4/4] 正在建立賽日更易事項庫 (換騎師、超磅、閘前重釘蹄鐵)...")
-    c.execute("SELECT race_id, race_date, race_no, horse_name, incident_report FROM stewards_incidents WHERE incident_report LIKE '%蹄鐵%' OR incident_report LIKE '%更換騎師%' OR incident_report LIKE '%超磅%'")
     changes_data = []
-    for r_id, r_date, r_no, h_name, report in c.fetchall():
-        c_type = "閘前裝蹄" if "蹄鐵" in report else ("更換騎師" if "更換騎師" in report else "超磅")
-        changes_data.append((r_id, r_date, r_no, h_name, c_type, report))
+    if table_exists(conn, "stewards_incidents"):
+        try:
+            c.execute("SELECT race_id, race_date, race_no, horse_name, incident_report FROM stewards_incidents WHERE incident_report LIKE '%蹄鐵%' OR incident_report LIKE '%更換騎師%' OR incident_report LIKE '%超磅%'")
+            for r_id, r_date, r_no, h_name, report in c.fetchall():
+                c_type = "閘前裝蹄" if "蹄鐵" in report else ("更換騎師" if "更換騎師" in report else "超磅")
+                changes_data.append((r_id, r_date, r_no, h_name, c_type, report))
+        except Exception as e:
+            print(f"  [!] 更易提取跳過: {e}")
 
     c.execute("DELETE FROM raceday_changes_incidents")
     c.executemany("INSERT INTO raceday_changes_incidents VALUES (NULL, ?, ?, ?, ?, ?, ?)", changes_data)
