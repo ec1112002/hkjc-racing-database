@@ -16,9 +16,15 @@ HEADERS = {
 
 def init_tables(conn):
     c = conn.cursor()
-    # 1. 自購馬來港前海外賽績表
+    # 徹底刪除可能帶有舊欄位架構的過渡表，重建全新標準表
+    c.execute("DROP TABLE IF EXISTS pp_overseas_form")
+    c.execute("DROP TABLE IF EXISTS jockey_suspensions")
+    c.execute("DROP TABLE IF EXISTS special_health_registers")
+    c.execute("DROP TABLE IF EXISTS raceday_changes_incidents")
+
+    # 1. 自購馬來港前海外賽績與原名表
     c.execute("""
-    CREATE TABLE IF NOT EXISTS pp_overseas_form (
+    CREATE TABLE pp_overseas_form (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         horse_code TEXT,
         horse_name TEXT,
@@ -27,7 +33,7 @@ def init_tables(conn):
     )""")
     # 2. 騎師停賽處罰與日程表
     c.execute("""
-    CREATE TABLE IF NOT EXISTS jockey_suspensions (
+    CREATE TABLE jockey_suspensions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         race_id TEXT,
         race_date TEXT,
@@ -38,7 +44,7 @@ def init_tables(conn):
     )""")
     # 3. 專項列管健康名單 (喘鳴症、喉部手術、流鼻血等)
     c.execute("""
-    CREATE TABLE IF NOT EXISTS special_health_registers (
+    CREATE TABLE special_health_registers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         horse_code TEXT,
         horse_name TEXT,
@@ -48,7 +54,7 @@ def init_tables(conn):
     )""")
     # 4. 賽日更易與突發事項 (換騎師、超磅、閘前重裝蹄鐵)
     c.execute("""
-    CREATE TABLE IF NOT EXISTS raceday_changes_incidents (
+    CREATE TABLE raceday_changes_incidents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         race_id TEXT,
         race_date TEXT,
@@ -113,8 +119,10 @@ def main():
             pass
         time.sleep(1.0)
 
-    c.execute("DELETE FROM pp_overseas_form")
-    c.executemany("INSERT INTO pp_overseas_form VALUES (NULL, ?, ?, ?, ?)", pp_rows)
+    c.executemany(
+        "INSERT INTO pp_overseas_form (horse_code, horse_name, former_name, country) VALUES (?, ?, ?, ?)",
+        pp_rows
+    )
     conn.commit()
     print(f"  [✔] 成功建立自購馬海外對照庫: {len(pp_rows)} 匹！")
 
@@ -137,8 +145,10 @@ def main():
         except Exception as e:
             print(f"  [!] 停賽提取跳過: {e}")
 
-    c.execute("DELETE FROM jockey_suspensions")
-    c.executemany("INSERT INTO jockey_suspensions VALUES (NULL, ?, ?, ?, ?, ?, ?)", suspension_data)
+    c.executemany(
+        "INSERT INTO jockey_suspensions (race_id, race_date, jockey_name, suspension_days, fine_amount, raw_verdict) VALUES (?, ?, ?, ?, ?, ?)",
+        suspension_data
+    )
     conn.commit()
     print(f"  [✔] 成功建立騎師停賽處罰日程表: {len(suspension_data)} 筆！")
 
@@ -161,8 +171,10 @@ def main():
         except Exception as e:
             print(f"  [!] 獸醫提取跳過: {e}")
 
-    c.execute("DELETE FROM special_health_registers")
-    c.executemany("INSERT INTO special_health_registers VALUES (NULL, ?, ?, ?, ?, ?)", health_data)
+    c.executemany(
+        "INSERT INTO special_health_registers (horse_code, horse_name, record_date, health_type, condition_desc) VALUES (?, ?, ?, ?, ?)",
+        health_data
+    )
     conn.commit()
     print(f"  [✔] 成功建立特殊健康列管庫: {len(health_data)} 筆！")
 
@@ -180,8 +192,10 @@ def main():
         except Exception as e:
             print(f"  [!] 更易提取跳過: {e}")
 
-    c.execute("DELETE FROM raceday_changes_incidents")
-    c.executemany("INSERT INTO raceday_changes_incidents VALUES (NULL, ?, ?, ?, ?, ?, ?)", changes_data)
+    c.executemany(
+        "INSERT INTO raceday_changes_incidents (race_id, race_date, race_no, horse_name, change_type, details) VALUES (?, ?, ?, ?, ?, ?)",
+        changes_data
+    )
     conn.commit()
     print(f"  [✔] 成功建立臨場更易與突發庫: {len(changes_data)} 筆！")
 
